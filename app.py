@@ -4,14 +4,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # -------------------------
-# HEADER (ORICA LOGO)
+# ORICA HEADER
 # -------------------------
 try:
     st.image("orica_logo.png", width=180)
 except:
     st.write("ORICA")
-
-st.title("Blaster 3000 Analysis Tool")
 
 # -------------------------
 # INPUTS
@@ -21,6 +19,53 @@ logger_file = st.file_uploader("Upload Logger Report (.txt)")
 compare = st.checkbox("Compare Controller & Logger")
 
 run = st.button("🔍 Summarise Now")
+
+# -------------------------
+# VOLTAGE CALCULATION
+# -------------------------
+def calculate_voltage(status_id):
+    try:
+        hex_part = status_id[4:6]
+        decimal = int(hex_part, 16)
+        voltage = (decimal / 255) * 30
+        return round(voltage, 2)
+    except:
+        return None
+
+# -------------------------
+# LOGGER PARSER
+# -------------------------
+def parse_logger(text):
+    lines = text.split("\n")
+    data = []
+
+    for line in lines:
+        match = re.search(
+            r"(\d+)\s+([A-Z0-9]+)\s+(\d+)\s+ms\s+(\d+\.\d+)\s+mA\s+\((\w+)\)\s+Det\s+(\w+)",
+            line
+        )
+
+        if match:
+            status_id = match.group(5)
+            voltage = calculate_voltage(status_id)
+
+            data.append({
+                "Number": int(match.group(1)),
+                "Detonator ID": match.group(2),
+                "Timing (ms)": int(match.group(3)),
+                "Leakage (mA)": float(match.group(4)),
+                "Status ID": status_id,
+                "Det Status": match.group(6),
+                "Voltage (V)": voltage
+            })
+
+    df = pd.DataFrame(data)
+
+    df["Category"] = df["Voltage (V)"].apply(
+        lambda v: "✅ >20V" if v and v >= 20 else ("⚠️ 12–20V" if v and v >= 12 else "❌ <12V")
+    )
+
+    return df
 
 # -------------------------
 # CONTROLLER PARSER
@@ -39,142 +84,94 @@ def parse_controller(text):
 
     roles = re.findall(r"(B\d+).*?(Controller|Remote.*)", text)
 
-    blasters = re.findall(
-        r"Blaster ID:\s*(\d+).*?Serial No.:\s*(\d+).*?Battery:\s*(\d+).*?Status:\s*(.+)",
-        text, re.S
-    )
+    # Aborted
+    aborted = "aborted" in text.lower()
+    abort_time = re.search(r"Abort.*at (.+)", text)
+    abort_reason = re.search(r"Reason:\s*(.+)", text)
 
-    blaster_table = []
-    for b in blasters:
-        blaster_table.append({
-            "Blaster ID": b[0],
-            "Serial No": b[1],
-            "Battery (%)": b[2],
-            "Status": b[3]
-        })
-
-    logger_data = re.findall(
-        r"Logger ID:\s*(\d+).*?Detonators:\s*(\d+).*?Detonator Errors:\s*(\d+).*?Current:\s*(\d+)mA",
-        text, re.S
-    )
-
-    logger_table = []
-    for l in logger_data:
-        logger_table.append({
-            "Logger ID": l[0],
-            "Detonators": int(l[1]),
-            "Errors": int(l[2]),
-            "Current (mA)": int(l[3])
-        })
-
-    fire_time = re.search(r"Fire command sent at (.+)", text)
-
-    return summary, roles, pd.DataFrame(blaster_table), pd.DataFrame(logger_table), (fire_time.group(1) if fire_time else "N/A")
-
-
-# -------------------------
-# LOGGER PARSER
-# -------------------------
-def parse_logger(text):
-
-    lines = text.split("\n")
-    data = []
-
-    for i, line in enumerate(lines):
-        match = re.search(
-            r"(\d+)\s+([A-Z0-9]+)\s+(\d+)\s+ms\s+(\d+\.\d+)\s+mA\s+\((\w+)\)\s+Det\s+(\w+)",
-            line
-        )
-
-        if match:
-            try:
-                voltage = float(lines[i + 1].strip())
-            except:
-                voltage = None
-
-            data.append({
-                "Number": int(match.group(1)),
-                "Detonator ID": match.group(2),
-                "Timing (ms)": int(match.group(3)),
-                "Leakage (mA)": float(match.group(4)),
-                "Status ID": match.group(5),
-                "Det Status": match.group(6),
-                "Voltage": voltage
-            })
-
-    df = pd.DataFrame(data)
-
-    # Voltage classification
-    df["Category"] = df["Voltage"].apply(
-        lambda v: "✅ >20V" if v and v > 20 else ("⚠️ 14–20V" if v and v >= 14 else "❌ <14V")
-    )
-
-    return df
-
+    return summary, roles, aborted, abort_time, abort_reason
 
 # -------------------------
 # MAIN EXECUTION
 # -------------------------
 if run:
 
+    report_text = ""
     ctrl_ids = set()
     log_ids = set()
 
-    # ---------------- BLASTER REPORT ----------------
+    # ---------------- TITLE LOGIC ----------------
+    if controller_file and logger_file:
+        st.title("Blast Report")
+    elif controller_file:
+        st.title("Blaster 3000 Report")
+    elif logger_file:
+        st.title("Logger Report")
+
+    # ---------------- BLASTER ----------------
     if controller_file:
 
         st.header("💥 Blaster 3000 Report")
 
         text = controller_file.read().decode("utf-8")
-
-        summary, roles, blaster_df, logger_df, fire_time = parse_controller(text)
+        summary, roles, aborted, abort_time, abort_reason = parse_controller(text)
 
         st.subheader("Summary")
         for k, v in summary.items():
             st.write(f"**{k}:** {v}")
-
-        st.write(f"**Fire Timestamp:** {fire_time}")
+            report_text += f"{k}: {v}\n"
 
         st.subheader("Blaster Roles")
         for r in roles:
             st.write(f"{r[0]} → {r[1]}")
+            report_text += f"{r[0]} → {r[1]}\n"
 
-        st.subheader("Blaster Details")
-        st.dataframe(blaster_df)
+        if aborted:
+            st.error("❌ Blast Aborted")
+            report_text += "\nBlast Aborted\n"
 
-        st.subheader("Logger Breakdown")
-        st.dataframe(logger_df)
+            if abort_time:
+                st.write(f"Abort Time: {abort_time.group(1)}")
+                report_text += f"Abort Time: {abort_time.group(1)}\n"
+
+            if abort_reason:
+                st.write(f"Reason: {abort_reason.group(1)}")
+                report_text += f"Reason: {abort_reason.group(1)}\n"
 
         ctrl_ids = set(re.findall(r"\b[A-Z0-9]{8}\b", text))
 
-    # ---------------- LOGGER REPORT ----------------
+    # ---------------- LOGGER ----------------
     if logger_file:
 
         st.header("⚡ Logger Report")
 
-        log_text = logger_file.read().decode("utf-8")
-        df = parse_logger(log_text)
-
+        df = parse_logger(logger_file.read().decode("utf-8"))
         st.dataframe(df)
 
-        voltages = df["Voltage"].dropna()
+        voltages = df["Voltage (V)"].dropna()
 
-        high = len(voltages[voltages > 20])
-        mid = len(voltages[(voltages >= 14) & (voltages <= 20)])
-        low = len(voltages[voltages < 14])
+        high = len(voltages[voltages >= 20])
+        mid = len(voltages[(voltages >= 12) & (voltages < 20)])
+        low = len(voltages[voltages < 12])
 
-        st.subheader("Voltage Summary")
+        st.subheader("Logger Summary")
 
         if low == 0 and mid == 0:
-            st.success("✅ All detonators have received >20V and are ready to fire")
+            msg = "✅ All detonators have received >20V and are ready to fire"
+            st.success(msg)
         else:
-            st.warning(f"{high} >20V, {mid} between 14–20V, {low} <14V")
+            msg = f"{high} ≥20V, {mid} (12–20V), {low} <12V"
+            st.warning(msg)
 
-        # Histogram FIXED
+        report_text += f"\nLogger Summary:\n{msg}\n"
+
+        # 3 BAR HISTOGRAM
+        counts = [low, mid, high]
+        labels = ["0–12 V", "12–20 V", "20+ V"]
+
         fig, ax = plt.subplots()
-        ax.hist(voltages, bins=20)
-        ax.set_xlabel("Voltage")
-        ax.set_ylabel("Count")
+        ax.bar(labels, counts)
+        ax.set_ylabel("Number of Detonators")
         ax.set_title("Voltage Distribution")
         st.pyplot(fig)
 
@@ -191,17 +188,22 @@ if run:
         if missing:
             st.error("Missing Detonators:")
             st.write(list(missing))
+            report_text += f"\nMissing: {list(missing)}\n"
 
         if extra:
             st.warning("Extra Detonators:")
             st.write(list(extra))
+            report_text += f"\nExtra: {list(extra)}\n"
 
-    # ---------------- REPORT BUTTON ----------------
+    # ---------------- DOWNLOAD ----------------
     if st.button("📄 Generate Report"):
 
-        if logger_file and controller_file:
-            st.success("✅ Report: Blast Report (Blaster + Logger)")
-        elif logger_file:
-            st.success("✅ Report: Logger Report")
-        elif controller_file:
-            st.success("✅ Report: Blaster 3000 Report")
+        if not report_text:
+            report_text = "No data processed."
+
+        st.download_button(
+            label="⬇️ Download Report",
+            data=report_text,
+            file_name="blast_report.txt",
+            mime="text/plain"
+        )
