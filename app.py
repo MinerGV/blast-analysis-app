@@ -17,11 +17,10 @@ st.title("Logger Report Analyzer")
 # INPUT
 # -------------------------
 logger_file = st.file_uploader("Upload Logger Report (.txt)")
-
 run = st.button("🔍 Summarise Now")
 
 # -------------------------
-# VOLTAGE CALCULATION
+# VOLTAGE CALC
 # -------------------------
 def calculate_voltage(status_id):
     try:
@@ -40,30 +39,37 @@ legwire_map = {
     "A": 80, "B": 100
 }
 
+def get_legwire(det_id):
+    return legwire_map.get(det_id[1].upper(), 0)
+
 # -------------------------
 # TYPE MAP
 # -------------------------
 def get_type(det_id):
-    first = det_id[0]
-    if first in ["2", "3"]:
+    if det_id[0] in ["2", "3"]:
         return "i-kon"
-    elif first in ["6", "7"]:
+    elif det_id[0] in ["6", "7"]:
         return "eDev"
-    else:
-        return "Unknown"
-
-# -------------------------
-# LEGWIRE FUNCTION
-# -------------------------
-def get_legwire(det_id):
-    second = det_id[1].upper()
-    return legwire_map.get(second, 0)
+    return "Unknown"
 
 # -------------------------
 # PARSER
 # -------------------------
 def parse_logger(text):
 
+    # ------- HEADER EXTRACTION -------
+    timestamp = re.search(r"Date:\s*(.+)", text)
+    logger_id = re.search(r"Logger ID:\s*(\d+)", text)
+    serial = re.search(r"Serial No.:\s*(\d+)", text)
+    mode = re.search(r"Mode:\s*(\w+)", text)
+    battery = re.search(r"Battery:\s*(\d+%)", text)
+    fw_gui = re.search(r"FW Version - GUI:\s*([\d\.]+)", text)
+    det_logged = re.search(r"Detonators logged:\s*(\d+)", text)
+
+    fire_flags = re.search(r"\*C, A, CH, F\*", text)
+    current = re.search(r"Current:\s*([\d\.]+ mA)", text)
+
+    # ------- DETONATOR TABLE -------
     data = []
 
     for line in text.split("\n"):
@@ -80,7 +86,6 @@ def parse_logger(text):
             det_type = get_type(det_id)
             legwire = get_legwire(det_id)
 
-            # Category
             if voltage is None:
                 category = "Unknown"
             elif voltage >= 20:
@@ -103,21 +108,43 @@ def parse_logger(text):
                 "Legwire (m)": legwire
             })
 
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+
+    return {
+        "timestamp": timestamp.group(1) if timestamp else "N/A",
+        "logger_id": logger_id.group(1) if logger_id else "N/A",
+        "serial": serial.group(1) if serial else "N/A",
+        "mode": mode.group(1) if mode else "N/A",
+        "battery": battery.group(1) if battery else "N/A",
+        "fw_gui": fw_gui.group(1) if fw_gui else "N/A",
+        "det_logged": det_logged.group(1) if det_logged else "N/A",
+        "fire_flags": "C, A, CH, F" if fire_flags else "N/A",
+        "current": current.group(1) if current else "N/A",
+        "table": df
+    }
 
 # -------------------------
 # MAIN
 # -------------------------
 if run and logger_file:
 
-    text = logger_file.read().decode("utf-8")
-    df = parse_logger(text)
+    parsed = parse_logger(logger_file.read().decode("utf-8"))
+    df = parsed["table"]
 
-    report_text = ""
-
-    # ✅ SUMMARY
+    # ✅ LOGGER SUMMARY
     st.header("⚡ Logger Summary")
 
+    st.write(f"**Timestamp:** {parsed['timestamp']}")
+    st.write(f"**Serial No.:** {parsed['serial']}")
+    st.write(f"**Logger ID:** {parsed['logger_id']}")
+    st.write(f"**Mode:** {parsed['mode']}")
+    st.write(f"**Battery:** {parsed['battery']}")
+    st.write(f"**Firmware (GUI):** {parsed['fw_gui']}")
+    st.write(f"**Detonators Logged:** {parsed['det_logged']}")
+    st.write(f"**Fire Globals:** {parsed['fire_flags']}")
+    st.write(f"**Total Current:** {parsed['current']}")
+
+    # -------- ENGINEERING SUMMARY --------
     total = len(df)
     ikon = len(df[df["Type"] == "i-kon"])
     edev = len(df[df["Type"] == "eDev"])
@@ -132,24 +159,17 @@ if run and logger_file:
     st.write(f"**i-kon:** {ikon} | **eDev:** {edev}")
 
     if low == 0 and mid == 0:
-        msg = "✅ All detonators >20V and ready to fire"
-        st.success(msg)
+        st.success("✅ All detonators >20V and ready to fire")
     else:
-        msg = f"{high} >20V, {mid} (12–20V), {low} <12V"
-        st.warning(msg)
+        st.warning(f"{high} >20V, {mid} (12–20V), {low} <12V")
 
     st.write(f"**Total Legwire:** {total_legwire} m")
-
-    report_text += f"Total Dets: {total}\n"
-    report_text += f"i-kon: {ikon}, eDev: {edev}\n"
-    report_text += f"{msg}\n"
-    report_text += f"Total Legwire: {total_legwire} m\n"
 
     # ✅ TABLE
     st.subheader("📊 Detonator Details")
     st.dataframe(df)
 
-    # ✅ HISTOGRAM (3 BARS)
+    # ✅ HISTOGRAM
     st.subheader("📉 Voltage Distribution")
 
     counts = [low, mid, high]
@@ -160,10 +180,25 @@ if run and logger_file:
     ax.set_ylabel("Number of Detonators")
     st.pyplot(fig)
 
-    # ✅ DOWNLOAD
+    # ✅ DOWNLOAD (FIXED)
+    report_text = f"""
+Logger Report
+Timestamp: {parsed['timestamp']}
+Serial: {parsed['serial']}
+Logger ID: {parsed['logger_id']}
+Mode: {parsed['mode']}
+Battery: {parsed['battery']}
+Firmware: {parsed['fw_gui']}
+
+Total Detonators: {total}
+i-kon: {ikon}, eDev: {edev}
+Voltage: {high} >20V, {mid} mid, {low} low
+Total Legwire: {total_legwire} m
+"""
+
     st.download_button(
-        label="⬇️ Download Logger Report",
+        "⬇️ Download Logger Report",
         data=report_text,
-        file_name="logger_report.txt",
+        file_name="logger_summary.txt",
         mime="text/plain"
     )
