@@ -4,14 +4,41 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # -------------------------
-# LOGO
+# 🔐 LOGIN SYSTEM
+# -------------------------
+def check_password():
+
+    def password_entered():
+        if st.session_state["password"] == st.secrets["PASSWORD"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.text_input("🔐 Enter Passcode", type="password", on_change=password_entered, key="password")
+        return False
+
+    if not st.session_state["password_correct"]:
+        st.text_input("🔐 Enter Passcode", type="password", on_change=password_entered, key="password")
+        st.error("❌ Incorrect Passcode")
+        return False
+
+    return True
+
+# Stop if not logged in
+if not check_password():
+    st.stop()
+
+# -------------------------
+# HEADER
 # -------------------------
 try:
     st.image("orica_logo.png", width=180)
 except:
     st.write("ORICA")
 
-st.title("Logger Report Analyzer")
+st.title("⚡ Logger Report Analyzer")
 
 # -------------------------
 # INPUT
@@ -57,7 +84,7 @@ def get_type(det_id):
 # -------------------------
 def parse_logger(text):
 
-    # ------- HEADER EXTRACTION -------
+    # -------- HEADER --------
     timestamp = re.search(r"Date:\s*(.+)", text)
     logger_id = re.search(r"Logger ID:\s*(\d+)", text)
     serial = re.search(r"Serial No.:\s*(\d+)", text)
@@ -66,10 +93,10 @@ def parse_logger(text):
     fw_gui = re.search(r"FW Version - GUI:\s*([\d\.]+)", text)
     det_logged = re.search(r"Detonators logged:\s*(\d+)", text)
 
-    fire_flags = re.search(r"\*C, A, CH, F\*", text)
+    fire_flags = re.search(r"\*\* fire command sent \*\*.*", text)
     current = re.search(r"Current:\s*([\d\.]+ mA)", text)
 
-    # ------- DETONATOR TABLE -------
+    # -------- DET TABLE --------
     data = []
 
     for line in text.split("\n"):
@@ -86,6 +113,7 @@ def parse_logger(text):
             det_type = get_type(det_id)
             legwire = get_legwire(det_id)
 
+            # CATEGORY
             if voltage is None:
                 category = "Unknown"
             elif voltage >= 20:
@@ -118,7 +146,7 @@ def parse_logger(text):
         "battery": battery.group(1) if battery else "N/A",
         "fw_gui": fw_gui.group(1) if fw_gui else "N/A",
         "det_logged": det_logged.group(1) if det_logged else "N/A",
-        "fire_flags": "C, A, CH, F" if fire_flags else "N/A",
+        "fire_flags": fire_flags.group(0) if fire_flags else "N/A",
         "current": current.group(1) if current else "N/A",
         "table": df
     }
@@ -141,7 +169,7 @@ if run and logger_file:
     st.write(f"**Battery:** {parsed['battery']}")
     st.write(f"**Firmware (GUI):** {parsed['fw_gui']}")
     st.write(f"**Detonators Logged:** {parsed['det_logged']}")
-    st.write(f"**Fire Globals:** {parsed['fire_flags']}")
+    st.write(f"**Fire Command:** {parsed['fire_flags']}")
     st.write(f"**Total Current:** {parsed['current']}")
 
     # -------- ENGINEERING SUMMARY --------
@@ -180,9 +208,9 @@ if run and logger_file:
     ax.set_ylabel("Number of Detonators")
     st.pyplot(fig)
 
-    # ✅ DOWNLOAD (FIXED)
+    # ✅ DOWNLOAD
     report_text = f"""
-Logger Report
+LOGGER REPORT
 Timestamp: {parsed['timestamp']}
 Serial: {parsed['serial']}
 Logger ID: {parsed['logger_id']}
