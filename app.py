@@ -1,6 +1,7 @@
 import streamlit as st
 import re
 import pandas as pd
+import matplotlib.pyplot as plt
 
 # -------------------------
 # LOGO
@@ -10,172 +11,159 @@ try:
 except:
     st.write("ORICA")
 
-st.title("Blaster 3000 Report Analyzer")
+st.title("Logger Report Analyzer")
 
 # -------------------------
 # INPUT
 # -------------------------
-controller_file = st.file_uploader("Upload Blaster 3000 Report (.txt)")
+logger_file = st.file_uploader("Upload Logger Report (.txt)")
 
 run = st.button("🔍 Summarise Now")
 
 # -------------------------
-# PARSER FUNCTION
+# VOLTAGE CALCULATION
 # -------------------------
-def parse_blaster(text):
+def calculate_voltage(status_id):
+    try:
+        hex_part = status_id[4:6]
+        decimal = int(hex_part, 16)
+        return round((decimal / 255) * 30, 2)
+    except:
+        return None
 
-    # -------- SUMMARY --------
-    summary = {
-        "Blasters used": re.search(r"Blasters:\s*(\d+)", text),
-        "Fire command received": re.search(r"Fire command received:\s*(\d+)", text),
-        "Loggers": re.search(r"Loggers:\s*(.+)", text),
-        "Total detonators": re.search(r"Detonators:\s*(\d+)", text),
-        "Detonator Errors": re.search(r"Detonator Errors:\s*(\d+)", text)
-    }
+# -------------------------
+# LEGWIRE MAP
+# -------------------------
+legwire_map = {
+    "1": 3, "2": 4, "3": 6, "4": 10, "5": 15,
+    "6": 20, "7": 30, "8": 40, "9": 60,
+    "A": 80, "B": 100
+}
 
-    summary = {k: (v.group(1) if v else "N/A") for k, v in summary.items()}
-
-    # -------- STATUS --------
-    fire_time = re.search(r"Fire command sent at (.+)", text)
-    abort_time = re.search(r"Aborted at (.+)", text)
-    abort_stage = re.search(r"in sequence:\s*(.+)", text)
-    abort_reason = re.search(r"Reason:\s*(.+)", text)
-
-    # Determine status
-    if fire_time:
-        status = "FIRED"
-        time = fire_time.group(1)
-    elif abort_time:
-        status = "ABORTED"
-        time = abort_time.group(1)
+# -------------------------
+# TYPE MAP
+# -------------------------
+def get_type(det_id):
+    first = det_id[0]
+    if first in ["2", "3"]:
+        return "i-kon"
+    elif first in ["6", "7"]:
+        return "eDev"
     else:
-        status = "UNKNOWN"
-        time = "N/A"
-
-    # -------- ROLES --------
-    roles = re.findall(r"(B\d+)\s+(Controller|Remote.*)", text)
-
-    # -------- BLASTER DETAILS --------
-    blaster_blocks = re.findall(
-        r"Blaster ID:\s*(\d+).*?Serial No.:\s*(\d+).*?Status:\s*(.+?)\s+Loggers:.*?Battery:\s*(\d+)\s*%.*?Current:\s*(\S+)",
-        text,
-        re.S
-    )
-
-    blaster_table = []
-    for b in blaster_blocks:
-        blaster_table.append({
-            "Blaster ID": b[0],
-            "Serial No": b[1],
-            "Status": b[2],
-            "Battery (%)": b[3],
-            "Current": b[4]
-        })
-
-    # -------- LOGGER DETAILS --------
-    logger_blocks = re.findall(
-        r"Logger ID:\s*(\d+).*?Serial No.:\s*(\d+).*?Status:\s*(\w+).*?Detonators:\s*(\d+).*?(?:Detonator Errors:\s*(\d+))?.*?Current:\s*(\S+)",
-        text,
-        re.S
-    )
-
-    logger_table = []
-    for l in logger_blocks:
-        logger_table.append({
-            "Logger ID": l[0],
-            "Serial No": l[1],
-            "Status": l[2],
-            "Detonators": l[3],
-            "Errors": l[4] if l[4] else "0",
-            "Current": l[5]
-        })
-
-    return summary, status, time, abort_stage, abort_reason, roles, pd.DataFrame(blaster_table), pd.DataFrame(logger_table)
-
+        return "Unknown"
 
 # -------------------------
-# MAIN EXECUTION
+# LEGWIRE FUNCTION
 # -------------------------
-if run and controller_file:
+def get_legwire(det_id):
+    second = det_id[1].upper()
+    return legwire_map.get(second, 0)
 
-    text = controller_file.read().decode("utf-8")
+# -------------------------
+# PARSER
+# -------------------------
+def parse_logger(text):
 
-    summary, status, time, abort_stage, abort_reason, roles, blaster_df, logger_df = parse_blaster(text)
+    data = []
 
-    report_text = "BLASTER 3000 REPORT\n\n"
+    for line in text.split("\n"):
+        match = re.search(
+            r"(\d+)\s+([A-Z0-9]+)\s+(\d+)\s+ms\s+(\d+\.\d+)\s+mA\s+\((\w+)\)\s+Det\s+(\w+)",
+            line
+        )
 
-    # ✅ TITLE
-    st.header("💥 Blaster 3000 Report")
+        if match:
+            det_id = match.group(2)
+            status_id = match.group(5)
+
+            voltage = calculate_voltage(status_id)
+            det_type = get_type(det_id)
+            legwire = get_legwire(det_id)
+
+            # Category
+            if voltage is None:
+                category = "Unknown"
+            elif voltage >= 20:
+                category = "✅ >20V"
+            elif voltage >= 12:
+                category = "⚠️ 12–20V"
+            else:
+                category = "❌ <12V"
+
+            data.append({
+                "Number": int(match.group(1)),
+                "Detonator ID": det_id,
+                "Timing (ms)": int(match.group(3)),
+                "Leakage (mA)": float(match.group(4)),
+                "Status ID": status_id,
+                "Status": match.group(6),
+                "Voltage (V)": voltage,
+                "Category": category,
+                "Type": det_type,
+                "Legwire (m)": legwire
+            })
+
+    return pd.DataFrame(data)
+
+# -------------------------
+# MAIN
+# -------------------------
+if run and logger_file:
+
+    text = logger_file.read().decode("utf-8")
+    df = parse_logger(text)
+
+    report_text = ""
 
     # ✅ SUMMARY
-    st.subheader("📊 Blast Summary")
-    for k, v in summary.items():
-        st.write(f"**{k}:** {v}")
-        report_text += f"{k}: {v}\n"
+    st.header("⚡ Logger Summary")
 
-    # ✅ STATUS
-    st.subheader("🚦 Blast Status")
+    total = len(df)
+    ikon = len(df[df["Type"] == "i-kon"])
+    edev = len(df[df["Type"] == "eDev"])
 
-    if status == "FIRED":
-        st.success(f"✅ FIRED at {time}")
-        report_text += f"\nStatus: FIRED at {time}\n"
+    high = len(df[df["Voltage (V)"] >= 20])
+    mid = len(df[(df["Voltage (V)"] >= 12) & (df["Voltage (V)"] < 20)])
+    low = len(df[df["Voltage (V)"] < 12])
 
-    elif status == "ABORTED":
-        st.error(f"❌ ABORTED at {time}")
-        report_text += f"\nStatus: ABORTED at {time}\n"
+    total_legwire = df["Legwire (m)"].sum()
 
-        if abort_stage:
-            st.write(f"Stage: {abort_stage.group(1)}")
-            report_text += f"Stage: {abort_stage.group(1)}\n"
+    st.write(f"**Total Detonators:** {total}")
+    st.write(f"**i-kon:** {ikon} | **eDev:** {edev}")
 
-        if abort_reason:
-            st.write(f"Reason: {abort_reason.group(1)}")
-            report_text += f"Reason: {abort_reason.group(1)}\n"
+    if low == 0 and mid == 0:
+        msg = "✅ All detonators >20V and ready to fire"
+        st.success(msg)
+    else:
+        msg = f"{high} >20V, {mid} (12–20V), {low} <12V"
+        st.warning(msg)
 
-    # ✅ ROLES
-    st.subheader("🧭 Blaster Roles")
-    for r in roles:
-        st.write(f"{r[0]} → {r[1]}")
-        report_text += f"{r[0]} → {r[1]}\n"
+    st.write(f"**Total Legwire:** {total_legwire} m")
 
-    # ✅ BLASTER DETAILS
-    if not blaster_df.empty:
-        st.subheader("🔧 Blaster Details")
-        st.dataframe(blaster_df)
-        report_text += "\nBlaster Details:\n"
-        report_text += blaster_df.to_string(index=False)
+    report_text += f"Total Dets: {total}\n"
+    report_text += f"i-kon: {ikon}, eDev: {edev}\n"
+    report_text += f"{msg}\n"
+    report_text += f"Total Legwire: {total_legwire} m\n"
 
-    # ✅ LOGGER DETAILS
-    if not logger_df.empty:
-        st.subheader("📡 Logger Breakdown")
-        st.dataframe(logger_df)
-        report_text += "\n\nLogger Details:\n"
-        report_text += logger_df.to_string(index=False)
+    # ✅ TABLE
+    st.subheader("📊 Detonator Details")
+    st.dataframe(df)
 
-    # ✅ ENGINEERING INSIGHT
-    st.subheader("💡 Engineering Insight")
+    # ✅ HISTOGRAM (3 BARS)
+    st.subheader("📉 Voltage Distribution")
 
-    insights = []
+    counts = [low, mid, high]
+    labels = ["0–12 V", "12–20 V", "20+ V"]
 
-    if status == "ABORTED":
-        insights.append("Blast aborted before firing stage")
-        if abort_reason:
-            insights.append(f"Cause: {abort_reason.group(1)}")
+    fig, ax = plt.subplots()
+    ax.bar(labels, counts)
+    ax.set_ylabel("Number of Detonators")
+    st.pyplot(fig)
 
-    if summary["Detonator Errors"] != "0":
-        insights.append("Detonator errors detected → investigate wiring or system")
-
-    if summary["Fire command received"] == "0":
-        insights.append("No fire command received → system did not initiate blast")
-
-    for i in insights:
-        st.write(f"- {i}")
-        report_text += f"\n- {i}"
-
-    # ✅ DOWNLOAD (FIXED)
+    # ✅ DOWNLOAD
     st.download_button(
-        label="⬇️ Download Blaster Report",
+        label="⬇️ Download Logger Report",
         data=report_text,
-        file_name="blaster_report.txt",
+        file_name="logger_report.txt",
         mime="text/plain"
     )
